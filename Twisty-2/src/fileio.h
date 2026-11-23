@@ -53,8 +53,10 @@ int16_t saveconfig(int16_t slot) {
   for (int16_t p=0;p<CONTROLLER_PAGES;++p) {
     file.printf("  { \"control\" : [ \n");
     for (int16_t c=0; c< NUMENCODERS;c++) {
+      file.printf("    {");
     //  file.printf("  { \"control\" : [ {");
-      file.printf("    { \"EncoderType\":%d,",controls[p].encoder[c].type);
+      file.printf("\"EncoderType\":%d,",controls[p].encoder[c].type);
+      file.printf("\"EncoderMode\":%d,",controls[p].encoder[c].mode);
       file.printf("\"EncoderChannel\":%d,",controls[p].encoder[c].channel);
       file.printf("\"EncoderCCNumber\":%d,",controls[p].encoder[c].ccnumber);
       file.printf("\"EncoderMinValue\":%d,",controls[p].encoder[c].minvalue);
@@ -65,7 +67,7 @@ int16_t saveconfig(int16_t slot) {
       file.printf("\"SwitchMode\":%d,",controls[p].encswitch[c].mode);
       file.printf("\"SwitchType\":%d,",controls[p].encswitch[c].type);
       file.printf("\"SwitchChannel\":%d,",controls[p].encswitch[c].channel);
-      file.printf("\"SwitchCC\":%d,",controls[p].encswitch[c].ccnumber);
+      file.printf("\"SwitchCCNumber\":%d,",controls[p].encswitch[c].ccnumber);
       file.printf("\"SwitchMinValue\":%d,",controls[p].encswitch[c].minvalue);
       file.printf("\"SwitchMaxValue\":%d,",controls[p].encswitch[c].maxvalue);
       file.printf("\"SwitchValue\":%d,",controls[p].encswitch[c].value);
@@ -116,7 +118,8 @@ int16_t loadconfig(int16_t slot) {
 
     for (int16_t p=0;p<CONTROLLER_PAGES;++p) {
       for (int16_t c=0; c< NUMENCODERS;c++) {
-        controls[p].encoder[c].type=doc["page"][p]["control"][c]["EncoderMode"];
+        controls[p].encoder[c].mode=doc["page"][p]["control"][c]["EncoderMode"];
+        controls[p].encoder[c].type=doc["page"][p]["control"][c]["EncoderType"];
         controls[p].encoder[c].channel=doc["page"][p]["control"][c]["EncoderChannel"];
         controls[p].encoder[c].ccnumber=doc["page"][p]["control"][c]["EncoderCCNumber"];
         controls[p].encoder[c].minvalue=doc["page"][p]["control"][c]["EncoderMinValue"];

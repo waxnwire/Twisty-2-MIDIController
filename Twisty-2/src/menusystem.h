@@ -1,6 +1,3 @@
-
-
-
 // Copyright 2020 Rich Heslip
 //
 // Author: Rich Heslip 
@@ -100,7 +97,8 @@ const char * onoff[] = {"   Off","    On"};
 const char * ledcolors[] = {"   Red","Orange"," Green","  Aqua","  Blue","Violet"," White"};
 const char * actions[] ={"  Load","  Save","Format"};
 const char * no_yes[] ={"    No","   Yes"};
-const char * enctypes[] ={"    CC"};
+const char * enctypes[] ={"    CC","    PC","  Note", "   OSC"};  // encoder types - CC is normal
+const char * encmodes[] ={"Absolu"," Delta"};  // encoder modes - normal is normal, delta is accumulative
 const char * switchmodes[] ={"Moment","Toggle"};
 const char * switchtypes[] ={"    CC","    PC","  Note","SetEnc"};
 
@@ -108,16 +106,28 @@ const char * switchtypes[] ={"    CC","    PC","  Note","SetEnc"};
 // NOTE: label 0 must be "CC" because its the only one that shows the CC number - special case
 // labels must be 6 characters or they will interfere with the value display and for the table size calculation to work
 
-const char * labels[] ={
-"    CC","   Arp","Attack","Alloff","  Band","Bandwi","  Bank","  Bass","  Bend","Bounce","   BPM","Breath","  Chan","Chorus"," Color","  Comp",
-" Crush","   Cut","Dampng"," Decay"," Delay",
-"Densty","DeTune"," Depth","Distrt"," Drive","  Duck","Effect","  Fade","Feedbk","Filter","Flange","    FM","  Freq","   End","    EQ","Expres","  Gain","  Gate"," Glide",
-"  High","  Hold","  Knee","Legato"," Level"," Limit"," Local","   Low","Master","   Mid","   Mix","   Mod","  Mono"," Morph",
-"  Mute","Octave","   Osc"," Osc 1"," Osc 2"," Osc 3"," Osc 4","  Omni","   Pan"," Pedal"," Phase","Phaser","  Poly","Portam","  Post","   Pre","     Q",
-"Rewind"," Pitch","  Play","PreAmp","PreDel","  Rate"," Ratio","Record","Releas","Repeat"," Reset"," Reson","Resume","Return",
-"Reverb","Rewind","Sample"," Scene","  Send"," Shape","  Solo"," Sound","Spread",
-" Start","  Stop","  Sync","Sustai","Timbre","  Time","  Tone"," Track","Treble","Tremol","  Trim","Triggr","  Tune","  Type","  Wave"," Vocal"," Voice","Volume",
-"  XPos","  YPos"
+const char * labels[] = {
+"AAAAAA","    CC","Alloff","   Arp","Attack","Balanc","  Band","Bandwi","  Bank","  Bass",
+"  Bend","Bounce","   BPM","Breath","  Chan","Chorus"," Clear",
+" Color","  Comp","crossT"," Crush","   Cut","Cutoff","Dampng"," Decay",
+" Delay","Densty"," Depth","Detune","Diffus","Distrt","Double"," Drive",
+"   Dry","  Duck","Effect","   End","    EQ","Expres","  Fade","Feedbk",
+"  Feel","Filter","Flange","Flutte","    FM","Freeze","  Freq","  Gain",
+"  Gate"," Glide","Glitch"," Grain","  High","  Hiss","  Hold","I.SndA",
+"I.SndB","Jitter","  Knee","Legato"," Level","   Lfo"," Limit"," Local",
+"  Loop","   Low","Master","   Mid","   Mix","   Mod","  Mono"," Morph",
+"  Mute","Octave","Offset","  Omni","   Osc"," Osc 1"," Osc 2"," Osc 3",
+" Osc 4","OvrDub","   Pan"," Pedal"," Phase","Phaser"," Pitch","  Play",
+"  Poly","Portam","Positn","  Post","   Pre","PreAmp","PreDel","     Q",
+"R.SndA","R.SndB","  Rand","  Rate"," Ratio","Record","  Redo","Releas",
+"Repeat"," Reset"," Reson","Resume","Return","Reverb","Revers","Rewind",
+"Rice_1","Rice_2","Rice_3","Rice_4","Sample","Satura"," Scene"," Scrub",
+"  Send"," Shape","Shimmr","  Size"," Slice"," Smear","  Solo"," Sound",
+" Speed"," Spray","Spread"," Start","  Stop","Stretc","Sustai","  Sync",
+"  Tape"," Tempo","Textur","Timbre","  Time","  Tone"," Track","Transp",
+"Treble","Tremol","Triggr","  Trim","  Tune","  Type"," Vocal"," Voice",
+"Volume","  Warp","  Wave","   Wet"," Width","Window","   Wow","  XPos",
+"  YPos"
 };
 #define NUM_LABELS sizeof(labels)/sizeof(labels[0])
 
@@ -125,7 +135,9 @@ const char * labels[] ={
 struct submenu controlparams[] = {
   // name,min,max,step,type,*textfield,*parameter,*handler,*exithandler
   "Enc MIDI Chan.",1,16,1,TYPE_INTEGER,0,&editbuffer.encoder.channel,0,0,
-//  "Enc Type",0,0,1,TYPE_TEXT,enctypes,&editbuffer.encoder.type,0,0,  // encoder supports just CC messages for now
+  "Enc Type",0,4,1,TYPE_TEXT,enctypes,&editbuffer.encoder.type,0,0,  // encoder supports just CC messages for now
+  /* Adding ACCUM / Delta style CC messages */
+  "Enc Mode",0,1,1,TYPE_TEXT,encmodes,&editbuffer.encoder.mode,0,0,
   "Enc CC No.",0,127,1,TYPE_INTEGER,0,&editbuffer.encoder.ccnumber,0,0,
   "Enc Label",0,NUM_LABELS-1,1,TYPE_TEXT,labels,&editbuffer.encoder.labelindex,0,0, 
   "Enc Color",0,5,1,TYPE_TEXT,ledcolors,&editbuffer.encoder.colorindex,0,0,
@@ -158,7 +170,10 @@ struct menu mainmenu[] = {
 #define NUM_MAIN_MENUS sizeof(mainmenu)/ sizeof(menu)
 menu * topmenu=mainmenu;  // points at current menu
 
+///////// DRAWING FUNCTIONS ///////////
+
 // highlight the currently selected menu item
+// place a ">" character in front of the menu item
 void drawselector( int8_t index) {
   int line = index % TOPMENU_LINES;
   display.setCursor (0, TOPMENU_Y+DISPLAY_Y_MENUPAD+line*(DISPLAY_CHAR_HEIGHT+DISPLAY_Y_MENUPAD));
@@ -167,6 +182,7 @@ void drawselector( int8_t index) {
 }
 
 // highlight the currently selected menu item as being edited
+// place a "*" character in front of the menu item
 void draweditselector( int8_t index) {
   int line = index % TOPMENU_LINES;
   display.setCursor (0, TOPMENU_Y+DISPLAY_Y_MENUPAD+line*(DISPLAY_CHAR_HEIGHT+DISPLAY_Y_MENUPAD) );
@@ -177,6 +193,7 @@ void draweditselector( int8_t index) {
 }
 
 // dehighlight the currently selected menu item
+// erase the ">" character in front of the menu item
 void undrawselector( int8_t index) {
   int line = index % TOPMENU_LINES;
   display.setCursor (0, TOPMENU_Y+DISPLAY_Y_MENUPAD+line*(DISPLAY_CHAR_HEIGHT+DISPLAY_Y_MENUPAD) );

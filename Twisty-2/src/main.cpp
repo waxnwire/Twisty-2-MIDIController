@@ -47,6 +47,8 @@
 #include <ArduinoJson.h>
 #include "LittleFS.h"
 #include <Control_Surface.h>
+#include "webBrowser.h"
+#include "osc.h"
 
 #define BLUETOOTH  // define for bluetooth MIDI - you MUST set up IPV4 + Bluetooth stack in the arduino Tools menu
 #ifdef BLUETOOTH
@@ -107,16 +109,16 @@ bool LEDstate;   // for LED flash
 #define A_MUX_2 7
 #define A_MUX_3 6
 
-#define ENCA_IN 17 // ports we read values from MUX
-#define ENCB_IN 11 // A & B swapped to get correct rotation
+#define ENCA_IN 11 // ports we read values from MUX
+#define ENCB_IN 17 // A & B swapped to get correct rotation
 #define ENCSW_IN 10
 
-#define LMENU_ENCA_IN 19 // left menu encoder
-#define LMENU_ENCB_IN 18 // A & B swapped to get correct rotation
+#define LMENU_ENCA_IN 18 // left menu encoder
+#define LMENU_ENCB_IN 19 // A & B swapped to get correct rotation
 #define LMENU_ENCSW_IN 16
 
-#define RMENU_ENCA_IN 22 // left menu encoder
-#define RMENU_ENCB_IN 21 // A & B swapped to get correct rotation
+#define RMENU_ENCA_IN 21 // left menu encoder
+#define RMENU_ENCB_IN 22 // A & B swapped to get correct rotation
 #define RMENU_ENCSW_IN 20
 
 // encoders - use an array of clickencoder objects for the 16 multiplexed encoders
@@ -161,12 +163,13 @@ BluetoothMIDI_Interface bleMIDI;
 uint16_t page=0; // CC page 0-3
 uint8_t lastnotesent=0; // keeps track of last note sent when switch sends note messages
 bool displaySwitchLEDs;    // toggle to show switch or encoder states
-enum encodertypes {CCTYPE};
+enum encodertypes {CCTYPE, DELTATYPE};
 enum switchmodes {MOMENTARY,TOGGLE};
 enum switchtypes {CCMESSAGE,PCMESSAGE,NOTEMESSAGE,SETENC};
 
 struct controllerencoder {
   int16_t type;   // midi message type
+  int16_t mode;   // encoder mode - normal or delta
   int16_t channel;
   int16_t ccnumber;
   int16_t minvalue;
@@ -174,6 +177,7 @@ struct controllerencoder {
   int16_t value;
   int16_t colorindex;  // index into color lookup table leds are 8 bits R, G and B
   int16_t labelindex; // index of label
+  char label[12] = ""; // label for encoder - max 11 chars + null
 };
 
 struct controllerswitch {
@@ -185,7 +189,8 @@ struct controllerswitch {
   int16_t maxvalue;
   int16_t value;
   int16_t colorindex;
-  int16_t labelindex; // index of label
+  int16_t labelindex; // index of label - 0 is CC, -1 could be for OTHER (assigned from web)
+  char label[12] = ""; // label for switch - max 11 chars + null
 };
 
 struct controllerpage {
@@ -199,19 +204,24 @@ struct controller {
   struct controllerswitch encswitch;
 } editbuffer;
 
+// Forward declarations
+void updatedisplay();
+void save_restore();
+
 // initialize all the controller settings
 void initcontrols(void) {
   int16_t ccnum=BASE_CC;
   for (int16_t p=0;p<CONTROLLER_PAGES;++p) {
     for (int16_t i=0; i<NUMENCODERS;++i) {
       controls[p].encoder[i].type=CCTYPE;
+      controls[p].encoder[i].mode=0;  // normal mode [feature not yet implemented]
       controls[p].encoder[i].channel=DEFAULT_ENCODER_CHANNEL;
       controls[p].encoder[i].ccnumber=ccnum;
       controls[p].encoder[i].minvalue=0;
       controls[p].encoder[i].maxvalue=127;
       controls[p].encoder[i].value=64;
       controls[p].encoder[i].colorindex=p;
-      controls[p].encoder[i].labelindex=0;  // label index 0 is "CC"
+      controls[p].encoder[i].labelindex=1;  // label index 0 is "CC"
       controls[p].encswitch[i].mode=TOGGLE;
       controls[p].encswitch[i].type=CCTYPE;
       controls[p].encswitch[i].channel=DEFAULT_SWITCH_CHANNEL;
@@ -220,7 +230,7 @@ void initcontrols(void) {
       controls[p].encswitch[i].maxvalue=127;
       controls[p].encswitch[i].value=0;
       controls[p].encswitch[i].colorindex=p;  // not used for now
-      controls[p].encswitch[i].labelindex=0;  // label index 0 is "CC"
+      controls[p].encswitch[i].labelindex=1;  // label index 0 is "CC"
       ++ccnum;
     }  
   }
@@ -238,6 +248,7 @@ int16_t lastcontrol=0; // keeps track of last used control
 // this allows one menu for all encoders vs 64 almost identical menus
 void copy_to_editbuffer(int16_t page,int16_t index) {
   editbuffer.encoder.type=controls[page].encoder[index].type;
+  editbuffer.encoder.mode=controls[page].encoder[index].mode;
   editbuffer.encoder.channel=controls[page].encoder[index].channel;
   editbuffer.encoder.ccnumber=controls[page].encoder[index].ccnumber;
   editbuffer.encoder.minvalue=controls[page].encoder[index].minvalue;
@@ -282,6 +293,9 @@ int16_t UI_state=UI_SEND_MIDI;
 // Use alarm 0
 #define ALARM_NUM 0
 #define ALARM_IRQ timer_hardware_alarm_get_irq_num(timer_hw, ALARM_NUM)
+
+static void alarm_irq(void);
+static void alarm_in_us_arm(uint32_t delay_us);
 
 static void alarm_in_us(uint32_t delay_us) {
   hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
@@ -389,8 +403,11 @@ void showencodercc(int16_t page, int16_t encoder){
   display.print("              ");
   display.setCursor(0,16);
   // the default label 0 "CC" is a special case where we show the CC number in large font, otherwise we show a custom label
-  if (controls[page].encoder[encoder].labelindex ==0) display.printf("%s %d %d","CC",controls[page].encoder[encoder].ccnumber,controls[page].encoder[encoder].value);
-  else display.printf("%s %d",labels[controls[page].encoder[encoder].labelindex],controls[page].encoder[encoder].value);
+  if (controls[page].encoder[encoder].labelindex ==1){
+    display.printf("%s %d %d","CC",controls[page].encoder[encoder].ccnumber,controls[page].encoder[encoder].value);
+  } else{
+    display.printf("%s %d",labels[controls[page].encoder[encoder].labelindex],controls[page].encoder[encoder].value);
+  }
   display.setTextSize(1);
   updatedisplay();  
 }
@@ -402,8 +419,13 @@ void showswitchcc(int16_t page, int16_t button){
   display.print("              ");
   display.setCursor(0,16);
   // the default label 0 "CC" is a special case where we show the CC number in large font, otherwise we show a custom label
-  if (controls[page].encswitch[button].labelindex ==0) display.printf("%s %d %d","CC",controls[page].encswitch[button].ccnumber,controls[page].encswitch[button].value);
-  else display.printf("%s %d",labels[controls[page].encswitch[button].labelindex],controls[page].encswitch[button].value);
+  // ADD IN HERE ABOUT LABEL == 0 FOR OTHER 
+  if (controls[page].encswitch[button].labelindex ==1){
+    // CC message type - show CC number and value
+    display.printf("%s %d %d","CC",controls[page].encswitch[button].ccnumber,controls[page].encswitch[button].value);
+  }else{
+    display.printf("%s %d",labels[controls[page].encswitch[button].labelindex],controls[page].encswitch[button].value);
+  } 
   display.setTextSize(1);
   updatedisplay();  
 }
@@ -579,6 +601,18 @@ void save_restore(void) {
   flush_encoders();   // toss any encoder messages
 }
 
+// Custom MIDI callback that prints incoming messages.
+struct MyMIDI_Callbacks : FineGrainedMIDI_Callbacks<MyMIDI_Callbacks> {
+  void onControlChange(Channel channel, uint8_t controller, uint8_t value, Cable cable) {
+    //set the LEDs to the value of the CC message for feedback
+    controls[page].encoder[lastcontrol].value=value; // update the encoder value for feedback
+    showencoderLED(page,lastcontrol); // update the LED for feedback
+    showencoder(page,lastcontrol); // update the display for feedback
+    updatedisplay();
+    Serial << "Control Change: " << channel << ", controller " << controller
+           << ", value " << value << ", " << cable << endl;
+  }
+} midiCallbacks;
 
 void setup() {
   Serial.begin(115200);
@@ -632,7 +666,7 @@ void setup() {
 #endif
 
   MIDI_Interface::beginAll();
-
+  usbMIDI.setCallbacks(midiCallbacks);
 //  Control_Surface.begin(); // Initialize the Control Surface MIDI interfaces
 
   display.clearDisplay();
@@ -644,6 +678,9 @@ void setup() {
 
   displaytimer=millis(); // reset display blanking timer
 
+  // WIFI setup
+  startWifiFileManager();
+  setupOSC();  // set up OSC server
 }
 
 void loop() {
@@ -658,21 +695,47 @@ void loop() {
   switch (UI_state) {
     case UI_SEND_MIDI:  // process encoders
       for (int i=0;i<NUMENCODERS;++i) {
-        if ((t=enc[i].getValue()) !=0) { // if encoder has moved process it
-          if (controls[page].encoder[i].minvalue < controls[page].encoder[i].maxvalue ) { // normal direction
-            controls[page].encoder[i].value=controls[page].encoder[i].value + t;
-            if (controls[page].encoder[i].value > controls[page].encoder[i].maxvalue) controls[page].encoder[i].value = controls[page].encoder[i].maxvalue;
-            if (controls[page].encoder[i].value < controls[page].encoder[i].minvalue) controls[page].encoder[i].value = controls[page].encoder[i].minvalue;
-          } else {
-            controls[page].encoder[i].value=controls[page].encoder[i].value - t; // encoder direction is reversed
-            if (controls[page].encoder[i].value > controls[page].encoder[i].minvalue) controls[page].encoder[i].value = controls[page].encoder[i].minvalue;
-            if (controls[page].encoder[i].value < controls[page].encoder[i].maxvalue) controls[page].encoder[i].value = controls[page].encoder[i].maxvalue;            
+        if ((t=enc[i].getValue()) !=0) { // if encoder has moved process
+          // TEMP
+          sendOSCFloat("/twisty/test/from_pico", 0.456f);
+          // t is a signed integer, positive for clockwise, negative for counterclockwise
+          if(controls[page].encoder[i].type == CCTYPE) {  // only process CC messages for now
+            if (controls[page].encoder[i].minvalue < controls[page].encoder[i].maxvalue ) { // normal direction
+              controls[page].encoder[i].value=controls[page].encoder[i].value + t;
+              if (controls[page].encoder[i].value > controls[page].encoder[i].maxvalue){
+                controls[page].encoder[i].value = controls[page].encoder[i].maxvalue;
+              }
+              if (controls[page].encoder[i].value < controls[page].encoder[i].minvalue){
+                controls[page].encoder[i].value = controls[page].encoder[i].minvalue;
+              }
+            } else {
+              controls[page].encoder[i].value=controls[page].encoder[i].value - t; // encoder direction is reversed
+              if (controls[page].encoder[i].value > controls[page].encoder[i].minvalue){
+                controls[page].encoder[i].value = controls[page].encoder[i].minvalue;
+              }
+              if (controls[page].encoder[i].value < controls[page].encoder[i].maxvalue){
+                controls[page].encoder[i].value = controls[page].encoder[i].maxvalue;
+              }
+            }
+          }else if(controls[page].encoder[i].type == DELTATYPE) {
+            // Delta messages mean 0-63 for counterclockwise and 65-127 for clockwise, 64 is no change
+            if (t>0){
+              controls[page].encoder[i].value=127;
+              //Serial.println("Delta CW");
+            } else{
+              controls[page].encoder[i].value=0;
+              //Serial.println("Delta CCW");
+            }
           }
           sendcontrolChange(controls[page].encoder[i].channel, controls[page].encoder[i].ccnumber,controls[page].encoder[i].value);
-          lastcontrol=i;  // save index of the last used encoder 
-          showencoderLED(page,lastcontrol);
-          showencoder(page,lastcontrol);
-          updatedisplay();       
+          lastcontrol=i;  // save index of the last used encoder
+          if(controls[page].encoder[i].type == CCTYPE) {
+            // only update the LED and display for CC messages, not delta messages
+            // delta messages are updated via the MIDI callback function
+            showencoderLED(page,lastcontrol);
+            showencoder(page,lastcontrol);
+            updatedisplay();
+          }
         }
       }
         // process switches
@@ -856,4 +919,6 @@ void loop() {
   }  // end switch
 
   LEDS.show();
+  handleClinet();  // handle any incoming client requests for the web server
+  loopOSC(); // handle any incoming OSC messages
 }
