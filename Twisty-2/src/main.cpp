@@ -41,7 +41,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_TinyUSB.h>  
 #include <MIDI.h>
-#include "Clickencoder.h"
+#include "encoderinput.h"
 //#include "StepSeq.h"
 #include <Adafruit_NeoPixel.h>
 #include <ArduinoJson.h>
@@ -49,8 +49,16 @@
 #include <Control_Surface.h>
 #include "webBrowser.h"
 #include "osc.h"
+#include "encodercontrol.h"
+#include "encodermenu.h"
+#include "menusystem.h"
+#include "menudata.h"
+#include "globalsettings.h"
+#include "wifisettings.h"
 
+#ifndef BLUETOOTH
 #define BLUETOOTH  // define for bluetooth MIDI - you MUST set up IPV4 + Bluetooth stack in the arduino Tools menu
+#endif
 #ifdef BLUETOOTH
 #include <MIDI_Interfaces/BluetoothMIDI_Interface.hpp>
 #endif
@@ -101,50 +109,6 @@ int32_t LEDtimer; // LED flash timer
 bool LEDstate;   // for LED flash
 #define OLED_DISPLAY   // for graphics conditionals
 
-#define NUMENCODERS 16 // number of encoders
-
-// I/O definitions
-#define A_MUX_0 9   // HC4067 address lines
-#define A_MUX_1 8
-#define A_MUX_2 7
-#define A_MUX_3 6
-
-#define ENCA_IN 11 // ports we read values from MUX
-#define ENCB_IN 17 // A & B swapped to get correct rotation
-#define ENCSW_IN 10
-
-#define LMENU_ENCA_IN 18 // left menu encoder
-#define LMENU_ENCB_IN 19 // A & B swapped to get correct rotation
-#define LMENU_ENCSW_IN 16
-
-#define RMENU_ENCA_IN 21 // left menu encoder
-#define RMENU_ENCB_IN 22 // A & B swapped to get correct rotation
-#define RMENU_ENCSW_IN 20
-
-// encoders - use an array of clickencoder objects for the 16 multiplexed encoders
-#define ENCDIVIDE 4  // divide by 4 works best with my encoders
-ClickEncoder enc[NUMENCODERS] = {
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE),
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE),
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE),
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE), 
-  ClickEncoder(ENCA_IN,ENCB_IN,ENCSW_IN,ENCDIVIDE)
-};
-
-ClickEncoder lmenuenc(LMENU_ENCA_IN,LMENU_ENCB_IN,LMENU_ENCSW_IN,ENCDIVIDE); // left menu encoder object
-ClickEncoder rmenuenc(RMENU_ENCA_IN,RMENU_ENCB_IN,RMENU_ENCSW_IN,ENCDIVIDE); // right menu encoder object
-
 // use Control Surface MIDI
 USBMIDI_Interface usbMIDI;
 
@@ -155,86 +119,14 @@ HardwareSerialMIDI_Interface serialMIDI {Serial1, MIDI_BAUD};
 BluetoothMIDI_Interface bleMIDI;
 #endif
 
-#define BASE_CC 16  // lowest default CC number to use
 #define DEFAULT_VELOCITY 127
-#define CONTROLLER_PAGES 4  // number of pages
-#define DEFAULT_ENCODER_CHANNEL 1  // default MIDI channel for encoders
-#define DEFAULT_SWITCH_CHANNEL 2  // default MIDI channel for encoders
 uint16_t page=0; // CC page 0-3
 uint8_t lastnotesent=0; // keeps track of last note sent when switch sends note messages
 bool displaySwitchLEDs;    // toggle to show switch or encoder states
-enum encodertypes {CCTYPE, DELTATYPE};
-enum switchmodes {MOMENTARY,TOGGLE};
-enum switchtypes {CCMESSAGE,PCMESSAGE,NOTEMESSAGE,SETENC};
-
-struct controllerencoder {
-  int16_t type;   // midi message type
-  int16_t mode;   // encoder mode - normal or delta
-  int16_t channel;
-  int16_t ccnumber;
-  int16_t minvalue;
-  int16_t maxvalue;
-  int16_t value;
-  int16_t colorindex;  // index into color lookup table leds are 8 bits R, G and B
-  int16_t labelindex; // index of label
-  char label[12] = ""; // label for encoder - max 11 chars + null
-};
-
-struct controllerswitch {
-  int16_t mode;
-  int16_t type;
-  int16_t channel;
-  int16_t ccnumber;
-  int16_t minvalue;
-  int16_t maxvalue;
-  int16_t value;
-  int16_t colorindex;
-  int16_t labelindex; // index of label - 0 is CC, -1 could be for OTHER (assigned from web)
-  char label[12] = ""; // label for switch - max 11 chars + null
-};
-
-struct controllerpage {
-  struct controllerencoder encoder[NUMENCODERS];
-  struct controllerswitch encswitch[NUMENCODERS];
-} controls[CONTROLLER_PAGES];
-
-// edit buffer
-struct controller {
-  struct controllerencoder encoder;
-  struct controllerswitch encswitch;
-} editbuffer;
 
 // Forward declarations
 void updatedisplay();
 void save_restore();
-
-// initialize all the controller settings
-void initcontrols(void) {
-  int16_t ccnum=BASE_CC;
-  for (int16_t p=0;p<CONTROLLER_PAGES;++p) {
-    for (int16_t i=0; i<NUMENCODERS;++i) {
-      controls[p].encoder[i].type=CCTYPE;
-      controls[p].encoder[i].mode=0;  // normal mode [feature not yet implemented]
-      controls[p].encoder[i].channel=DEFAULT_ENCODER_CHANNEL;
-      controls[p].encoder[i].ccnumber=ccnum;
-      controls[p].encoder[i].minvalue=0;
-      controls[p].encoder[i].maxvalue=127;
-      controls[p].encoder[i].value=64;
-      controls[p].encoder[i].colorindex=p;
-      controls[p].encoder[i].labelindex=1;  // label index 0 is "CC"
-      controls[p].encswitch[i].mode=TOGGLE;
-      controls[p].encswitch[i].type=CCTYPE;
-      controls[p].encswitch[i].channel=DEFAULT_SWITCH_CHANNEL;
-      controls[p].encswitch[i].ccnumber=ccnum;
-      controls[p].encswitch[i].minvalue=0;
-      controls[p].encswitch[i].maxvalue=127;
-      controls[p].encswitch[i].value=0;
-      controls[p].encswitch[i].colorindex=p;  // not used for now
-      controls[p].encswitch[i].labelindex=1;  // label index 0 is "CC"
-      ++ccnum;
-    }  
-  }
-}
 
 // values use in save/retore menu
 int16_t saverestore_slot=1;
@@ -244,91 +136,23 @@ int16_t saverestore_confirm=0; // take/don't take action
 enum control {ENCODER,BUTTON};
 int16_t lastcontrol=0; // keeps track of last used control
 
-// copy encoder parameters to temporary parameters for editing
-// this allows one menu for all encoders vs 64 almost identical menus
-void copy_to_editbuffer(int16_t page,int16_t index) {
-  editbuffer.encoder.type=controls[page].encoder[index].type;
-  editbuffer.encoder.mode=controls[page].encoder[index].mode;
-  editbuffer.encoder.channel=controls[page].encoder[index].channel;
-  editbuffer.encoder.ccnumber=controls[page].encoder[index].ccnumber;
-  editbuffer.encoder.minvalue=controls[page].encoder[index].minvalue;
-  editbuffer.encoder.maxvalue=controls[page].encoder[index].maxvalue;
-  editbuffer.encoder.colorindex=controls[page].encoder[index].colorindex;
-  editbuffer.encoder.labelindex=controls[page].encoder[index].labelindex;
-  editbuffer.encswitch.mode=controls[page].encswitch[index].mode;
-  editbuffer.encswitch.type=controls[page].encswitch[index].type;
-  editbuffer.encswitch.channel=controls[page].encswitch[index].channel;
-  editbuffer.encswitch.ccnumber=controls[page].encswitch[index].ccnumber;
-  editbuffer.encswitch.minvalue=controls[page].encswitch[index].minvalue;
-  editbuffer.encswitch.maxvalue=controls[page].encswitch[index].maxvalue;
-  editbuffer.encswitch.colorindex=controls[page].encswitch[index].colorindex;
-  editbuffer.encswitch.labelindex=controls[page].encswitch[index].labelindex;
-}
-
-// copy edited temporary parameters to encoder parameters
-void restore_from_editbuffer(int16_t page,int16_t index) {
-  controls[page].encoder[index].type=editbuffer.encoder.type;
-  controls[page].encoder[index].channel=editbuffer.encoder.channel;
-  controls[page].encoder[index].ccnumber=editbuffer.encoder.ccnumber;
-  controls[page].encoder[index].minvalue=editbuffer.encoder.minvalue;
-  controls[page].encoder[index].maxvalue=editbuffer.encoder.maxvalue;
-  controls[page].encoder[index].colorindex=editbuffer.encoder.colorindex;
-  controls[page].encoder[index].labelindex=editbuffer.encoder.labelindex;
-  controls[page].encswitch[index].mode=editbuffer.encswitch.mode;
-  controls[page].encswitch[index].type=editbuffer.encswitch.type;
-  controls[page].encswitch[index].channel=editbuffer.encswitch.channel;
-  controls[page].encswitch[index].ccnumber=editbuffer.encswitch.ccnumber;
-  controls[page].encswitch[index].minvalue=editbuffer.encswitch.minvalue;
-  controls[page].encswitch[index].maxvalue=editbuffer.encswitch.maxvalue;
-  controls[page].encswitch[index].colorindex=editbuffer.encswitch.colorindex;
-  controls[page].encswitch[index].labelindex=editbuffer.encswitch.labelindex;
-}
-
-enum ui_states {UI_SEND_MIDI,UI_EDIT,UI_LOADSAVE};
+enum ui_states {UI_SEND_MIDI,UI_EDIT,UI_LOADSAVE,UI_PREMENU,UI_ENCODER_MENU};
 int16_t UI_state=UI_SEND_MIDI;
+bool returnToPremenu=false;
+bool returnToEncoderMenu=false;
+struct menu controllerEditMenu[] = {{"", nullptr, 0, 0}};
+bool pendingSwitchClick[NUMENCODERS] = {};
+bool randomWidthEditActive[NUMENCODERS] = {};
+bool momentarySwitchActive[NUMENCODERS] = {};
+float randomWalkValue[CONTROLLER_PAGES][NUMENCODERS] = {};
+bool randomWalkInitialized[CONTROLLER_PAGES][NUMENCODERS] = {};
+bool switchActionActive[CONTROLLER_PAGES][NUMENCODERS] = {};
+bool switchRampRunning[CONTROLLER_PAGES][NUMENCODERS] = {};
+float switchReturnValue[CONTROLLER_PAGES][NUMENCODERS] = {};
+float switchRampTarget[CONTROLLER_PAGES][NUMENCODERS] = {};
+uint32_t lastRandomWalkStep = 0;
+uint32_t lastSwitchRampStep = 0;
 
-#define TIMER_MICROS 1000 // interrupt period
-
-// RP2040 timer code from https://github.com/raspberrypi/pico-examples/blob/master/timer/timer_lowlevel/timer_lowlevel.c
-// Use alarm 0
-#define ALARM_NUM 0
-#define ALARM_IRQ timer_hardware_alarm_get_irq_num(timer_hw, ALARM_NUM)
-
-static void alarm_irq(void);
-static void alarm_in_us_arm(uint32_t delay_us);
-
-static void alarm_in_us(uint32_t delay_us) {
-  hw_set_bits(&timer_hw->inte, 1u << ALARM_NUM);
-  irq_set_exclusive_handler(ALARM_IRQ, alarm_irq);
-  irq_set_enabled(ALARM_IRQ, true);
-  alarm_in_us_arm(delay_us);
-}
-
-static void alarm_in_us_arm(uint32_t delay_us) {
-  uint64_t target = timer_hw->timerawl + delay_us;
-  timer_hw->alarm[ALARM_NUM] = (uint32_t) target;
-}
-
-// timer interrupt handler
-// scans thru the multiplexed encoders and handles the menu encoders
-
-static void alarm_irq(void) {
-  for (int addr=0; addr< NUMENCODERS;++addr) {
-    digitalWrite(A_MUX_0, addr & 1);
-    digitalWrite(A_MUX_1, addr & 2);
-    digitalWrite(A_MUX_2, addr & 4);
-    digitalWrite(A_MUX_3, addr & 8); 
-    delayMicroseconds(4);         // address settling time 
-    enc[addr].service();    // check the encoder inputs
-  } 
-  lmenuenc.service(); // handle the menu encoders which are on different port pins
-  rmenuenc.service(); // 
-  hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM); // clear IRQ flag
-  alarm_in_us_arm(TIMER_MICROS);  // reschedule interrupt
-}
-
-// set up as include files because I'm too lazy to create proper header and .cpp files
-#include "menusystem.h"  // has to come after display and encoder objects creation
 #include "fileio.h"
 
  // midi related stuff
@@ -402,6 +226,12 @@ void showencodercc(int16_t page, int16_t encoder){
   display.setCursor(0,16);
   display.print("              ");
   display.setCursor(0,16);
+  if (controls[page].encoder[encoder].output == OSC_OUTPUT) {
+    display.printf("OSC %.2f", controls[page].encoder[encoder].oscValueMilli / 1000.0f);
+    display.setTextSize(1);
+    updatedisplay();
+    return;
+  }
   // the default label 0 "CC" is a special case where we show the CC number in large font, otherwise we show a custom label
   if (controls[page].encoder[encoder].labelindex ==1){
     display.printf("%s %d %d","CC",controls[page].encoder[encoder].ccnumber,controls[page].encoder[encoder].value);
@@ -459,9 +289,27 @@ void showchannel(int16_t channel){
 // show encoder values
 void showencoder(int16_t page,int16_t controlindex) {
     showpage(page+1);  // for display use 1 based indices
-    showcc(controls[page].encoder[controlindex].ccnumber);
-    showchannel(controls[page].encoder[controlindex].channel); // update the display
+    if (controls[page].encoder[controlindex].output == OSC_OUTPUT) {
+      display.setCursor(32,0);
+      display.print("OSC");
+      display.setCursor(80,0);
+      display.print("      ");
+    } else {
+      showcc(controls[page].encoder[controlindex].ccnumber);
+      showchannel(controls[page].encoder[controlindex].channel);
+    }
     showencodercc(page,controlindex);
+}
+
+void showEncoderWidth(int16_t page, int16_t encoder, bool editing) {
+  display.setTextSize(1);
+  display.setCursor(0, 8);
+  display.print("                    ");
+  if (editing) {
+    display.setCursor(0, 8);
+    display.printf("Width %.2f", controls[page].encoder[encoder].randomWalkWidth);
+  }
+  updatedisplay();
 }
 
 // show encoder switch mode and value
@@ -469,7 +317,9 @@ void showencoder(int16_t page,int16_t controlindex) {
 void showswitch(int16_t page,int16_t controlindex) {
   showpage(page+1);  // for display use 1 based indices
   display.setCursor(32,0);
-  switch (controls[page].encswitch[controlindex].type) {
+  if (controls[page].encoder[controlindex].output == OSC_OUTPUT) {
+    display.print("OSC");
+  } else switch (controls[page].encswitch[controlindex].type) {
     case CCMESSAGE:
       display.printf("CC %d",controls[page].encswitch[controlindex].ccnumber);
       break;
@@ -485,13 +335,22 @@ void showswitch(int16_t page,int16_t controlindex) {
     default:
       break;      
   }
-  if (controls[page].encswitch[controlindex].type == SETENC) showchannel(controls[page].encoder[controlindex].channel); // if we just set the encoder value show its channel
-  else showchannel(controls[page].encswitch[controlindex].channel); // otherwise show the switch MIDI channel
+  if (controls[page].encoder[controlindex].output == OSC_OUTPUT) {
+    display.setCursor(80,0);
+    display.print("      ");
+  } else if (controls[page].encswitch[controlindex].type == SETENC) {
+    showchannel(controls[page].encoder[controlindex].channel);
+  } else {
+    showchannel(controls[page].encswitch[controlindex].channel);
+  }
   display.setTextSize(2);
   display.setCursor(0,16);
   display.print("              ");
   display.setCursor(0,16);
-  switch (controls[page].encswitch[controlindex].type) {
+  if (controls[page].encoder[controlindex].output == OSC_OUTPUT) {
+    display.printf("OSC %d", controls[page].encswitch[controlindex].value ==
+                                 controls[page].encswitch[controlindex].maxvalue);
+  } else switch (controls[page].encswitch[controlindex].type) {
     case CCMESSAGE:
   // the default label 0 "CC" is a special case where we show the CC number in large font, otherwise we show a custom label
     if (controls[page].encswitch[controlindex].labelindex ==0) display.printf("%s %d %d","CC",controls[page].encswitch[controlindex].ccnumber,controls[page].encswitch[controlindex].value);
@@ -519,7 +378,19 @@ void showswitch(int16_t page,int16_t controlindex) {
 void showencoderLED(int16_t page,int16_t encoder) {
   int32_t color=colorpalette[controls[page].encoder[encoder].colorindex];
   color=color/31; // scale color down to 1 bit **** this isn't going to work with custom colors
-  color=color*brightness_table[(controls[page].encoder[encoder].value>>2 & 0x1f)]; // scale the brightness by the CC value
+  int value = controls[page].encoder[encoder].value;
+  if (controls[page].encoder[encoder].output == OSC_OUTPUT) {
+    int oscValue = controls[page].encoder[encoder].oscValueMilli;
+    if (controls[page].encoder[encoder].oscRange == OSC_RANGE_0_TO_1) {
+      value = oscValue * 127 / 1000;
+    } else if (controls[page].encoder[encoder].oscRange == OSC_RANGE_NEG1_TO_1) {
+      value = (oscValue + 1000) * 127 / 2000;
+    } else {
+      value = 64;
+    }
+  }
+  value = constrain(value, 0, 127);
+  color=color*brightness_table[(value>>2 & 0x1f)];
   LEDS.setPixelColor(encoder,color);
 }
 
@@ -529,9 +400,345 @@ void showswitchLED(int16_t page,int16_t button) {
   else LEDS.setPixelColor(button,LED_BLACK);
 }
 
+void sendEncoderOutput(int16_t page, int16_t index, float value) {
+  controllerencoder &encoder = controls[page].encoder[index];
+  if (encoder.output == OSC_OUTPUT) {
+    if (encoder.oscAddress[0] != '\0') {
+      sendOSCControlValue(encoder.oscAddress, value, static_cast<oscvaluetype>(encoder.oscValueType));
+    }
+    return;
+  }
+  int midiValue = constrain(static_cast<int>(value + (value >= 0.0f ? 0.5f : -0.5f)), 0, 127);
+  sendcontrolChange(encoder.channel, encoder.ccnumber, midiValue);
+}
+
+void sendSwitchOutput(int16_t page, int16_t index, bool active) {
+  controllerswitch &controlSwitch = controls[page].encswitch[index];
+  if (controls[page].encoder[index].output == OSC_OUTPUT) {
+    if (controlSwitch.oscAddress[0] != '\0') {
+      sendOSCControlValue(controlSwitch.oscAddress, active ? 1.0f : 0.0f,
+                          static_cast<oscvaluetype>(controlSwitch.oscValueType));
+    }
+    return;
+  }
+
+  switch (controlSwitch.type) {
+    case CCMESSAGE:
+      sendcontrolChange(controlSwitch.channel, controlSwitch.ccnumber, controlSwitch.value);
+      break;
+    case PCMESSAGE:
+      sendprogramChange(controlSwitch.channel, controlSwitch.value);
+      break;
+    case NOTEMESSAGE:
+      if (active) {
+        sendnoteOn(controlSwitch.channel, controlSwitch.value, DEFAULT_VELOCITY);
+        lastnotesent = controlSwitch.value;
+      } else {
+        sendnoteOff(controlSwitch.channel, lastnotesent, 0);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+float encoderCenter(int16_t page, int16_t index);
+void showSwitchState(int16_t page, int16_t index);
+
+float switchTargetValue(int16_t page, int16_t index) {
+  const controllerencoder &encoder = controls[page].encoder[index];
+  const controllerswitch &controlSwitch = controls[page].encswitch[index];
+  float midiValue = constrain(controlSwitch.maxvalue, 0, 127);
+  if (encoder.output == MIDI_OUTPUT) {
+    return midiValue;
+  }
+  float normalized = midiValue / 127.0f;
+  return encoder.oscRange == OSC_RANGE_0_TO_1 ? normalized
+                                               : normalized * 2.0f - 1.0f;
+}
+
+void setEncoderOutputValue(int16_t page, int16_t index, float value) {
+  controllerencoder &encoder = controls[page].encoder[index];
+  if (encoder.output == MIDI_OUTPUT) {
+    int minimum = encoder.minvalue < encoder.maxvalue ? encoder.minvalue : encoder.maxvalue;
+    int maximum = encoder.minvalue > encoder.maxvalue ? encoder.minvalue : encoder.maxvalue;
+    encoder.value = constrain(static_cast<int>(value + 0.5f), minimum, maximum);
+    sendEncoderOutput(page, index, encoder.value);
+  } else {
+    int minimum = encoder.oscRange == OSC_RANGE_0_TO_1 ? 0 : -1000;
+    int maximum = 1000;
+    encoder.oscValueMilli =
+        constrain(static_cast<int>(value * 1000.0f), minimum, maximum);
+    sendEncoderOutput(page, index, encoder.oscValueMilli / 1000.0f);
+  }
+  randomWalkInitialized[page][index] = false;
+  showencoderLED(page, index);
+  if (page == ::page && UI_state == UI_SEND_MIDI) {
+    showencoder(page, index);
+  }
+}
+
+void setSwitchAction(int16_t page, int16_t index, bool active) {
+  controllerswitch &controlSwitch = controls[page].encswitch[index];
+  bool wasActive = switchActionActive[page][index];
+  controlSwitch.value = active ? controlSwitch.maxvalue : controlSwitch.minvalue;
+
+  if (active && !wasActive) {
+    switchReturnValue[page][index] = encoderCenter(page, index);
+  }
+  switchActionActive[page][index] = active;
+
+  if (controlSwitch.function == SWITCH_JUMP) {
+    setEncoderOutputValue(page, index,
+                          active ? switchTargetValue(page, index)
+                                 : switchReturnValue[page][index]);
+  } else if (controlSwitch.function == SWITCH_RAMP) {
+    switchRampTarget[page][index] =
+        active ? switchTargetValue(page, index) : switchReturnValue[page][index];
+    switchRampRunning[page][index] = true;
+  } else {
+    if (!active && wasActive && randomWalkInitialized[page][index]) {
+      setEncoderOutputValue(page, index, randomWalkValue[page][index]);
+    }
+    randomWalkInitialized[page][index] = false;
+  }
+
+  sendSwitchOutput(page, index, active);
+  showSwitchState(page, index);
+}
+
+void showSwitchState(int16_t page, int16_t index) {
+  lastcontrol = index;
+  showswitchLED(page, index);
+  showswitch(page, index);
+  updatedisplay();
+}
+
+void clickSwitch(int16_t page, int16_t index) {
+  controllerswitch &controlSwitch = controls[page].encswitch[index];
+  if (controlSwitch.mode == MOMENTARY) {
+    setSwitchAction(page, index, true);
+    setSwitchAction(page, index, false);
+  } else {
+    setSwitchAction(page, index, !switchActionActive[page][index]);
+  }
+}
+
+void beginMomentarySwitch(int16_t page, int16_t index) {
+  setSwitchAction(page, index, true);
+  momentarySwitchActive[index] = true;
+}
+
+void endMomentarySwitch(int16_t page, int16_t index) {
+  setSwitchAction(page, index, false);
+  momentarySwitchActive[index] = false;
+}
+
+float encoderCenter(int16_t page, int16_t index) {
+  const controllerencoder &encoder = controls[page].encoder[index];
+  return encoder.output == OSC_OUTPUT
+             ? encoder.oscValueMilli / 1000.0f
+             : static_cast<float>(encoder.value);
+}
+
+void synchronizeSwitchActions(void) {
+  for (int16_t targetPage = 0; targetPage < CONTROLLER_PAGES; ++targetPage) {
+    for (int16_t index = 0; index < NUMENCODERS; ++index) {
+      controllerswitch &controlSwitch = controls[targetPage].encswitch[index];
+      controlSwitch.output = controls[targetPage].encoder[index].output;
+      bool active = controlSwitch.mode == TOGGLE &&
+                    controlSwitch.value == controlSwitch.maxvalue;
+      switchActionActive[targetPage][index] = active;
+      switchReturnValue[targetPage][index] = encoderCenter(targetPage, index);
+      switchRampTarget[targetPage][index] =
+          active ? switchTargetValue(targetPage, index)
+                 : switchReturnValue[targetPage][index];
+      switchRampRunning[targetPage][index] = false;
+      randomWalkInitialized[targetPage][index] = false;
+    }
+  }
+}
+
+void restoreCurrentEditBuffer(void) {
+  int16_t previousOutput = controls[page].encoder[lastcontrol].output;
+  bool outputChanged = previousOutput != editbuffer.encoder.output;
+  if (outputChanged && switchActionActive[page][lastcontrol]) {
+    setSwitchAction(page, lastcontrol, false);
+  }
+  restore_from_editbuffer(page, lastcontrol);
+  if (outputChanged) {
+    controllerswitch &controlSwitch = controls[page].encswitch[lastcontrol];
+    controlSwitch.value = controlSwitch.minvalue;
+    switchActionActive[page][lastcontrol] = false;
+    switchRampRunning[page][lastcontrol] = false;
+    randomWalkInitialized[page][lastcontrol] = false;
+    switchReturnValue[page][lastcontrol] = encoderCenter(page, lastcontrol);
+  }
+}
+
+void processRandomWalk(void) {
+  uint32_t now = millis();
+  uint16_t speed = wifiSettings.randomWalkSpeedMs;
+  if (now - lastRandomWalkStep < speed) {
+    return;
+  }
+  lastRandomWalkStep = now;
+
+  for (int16_t index = 0; index < NUMENCODERS; ++index) {
+    controllerencoder &encoder = controls[page].encoder[index];
+    if (controls[page].encswitch[index].function != SWITCH_WOBBLE ||
+        !switchActionActive[page][index] || encoder.randomWalkWidth <= 0.0f) {
+      randomWalkInitialized[page][index] = false;
+      continue;
+    }
+
+    float center = encoderCenter(page, index);
+    float minimum;
+    float maximum;
+    float step;
+    if (encoder.output == OSC_OUTPUT) {
+      step = 0.01f;
+      if (encoder.oscRange == OSC_RANGE_0_TO_1) {
+        minimum = 0.0f;
+        maximum = 1.0f;
+      } else {
+        minimum = -1.0f;
+        maximum = 1.0f;
+      }
+      if (encoder.oscRange == OSC_RANGE_DELTA) {
+        center = 0.0f;
+      }
+    } else {
+      step = 1.0f;
+      minimum = encoder.minvalue < encoder.maxvalue ? encoder.minvalue : encoder.maxvalue;
+      maximum = encoder.minvalue > encoder.maxvalue ? encoder.minvalue : encoder.maxvalue;
+    }
+
+    float lower = minimum > center - encoder.randomWalkWidth
+                      ? minimum
+                      : center - encoder.randomWalkWidth;
+    float upper = maximum < center + encoder.randomWalkWidth
+                      ? maximum
+                      : center + encoder.randomWalkWidth;
+    float &value = randomWalkValue[page][index];
+    if (!randomWalkInitialized[page][index] || value < lower || value > upper) {
+      value = center;
+      randomWalkInitialized[page][index] = true;
+    }
+    if (lower < upper) {
+      float next = value + (random(0, 2) == 0 ? -step : step);
+      if (next < lower) {
+        next = upper < value + step ? upper : value + step;
+      } else if (next > upper) {
+        next = lower > value - step ? lower : value - step;
+      }
+      value = next;
+    }
+    sendEncoderOutput(page, index, value);
+  }
+}
+
+void processSwitchRamps(void) {
+  uint32_t now = millis();
+  uint16_t speed = wifiSettings.randomWalkSpeedMs;
+  if (now - lastSwitchRampStep < speed) {
+    return;
+  }
+  lastSwitchRampStep = now;
+
+  for (int16_t index = 0; index < NUMENCODERS; ++index) {
+    if (!switchRampRunning[page][index]) {
+      continue;
+    }
+    float current = encoderCenter(page, index);
+    float step = controls[page].encoder[index].output == OSC_OUTPUT ? 0.01f : 1.0f;
+    float difference = switchRampTarget[page][index] - current;
+    if (difference > step) {
+      current += step;
+    } else if (difference < -step) {
+      current -= step;
+    } else {
+      current = switchRampTarget[page][index];
+      switchRampRunning[page][index] = false;
+    }
+    setEncoderOutputValue(page, index, current);
+  }
+}
+
 // show all the encoder LEDs on a page
 void showencoderLEDs(int16_t page) {
   for (int16_t i=0;i< NUMPIXELS;++i) showencoderLED(page,i);
+}
+
+float getWebEncoderCurrentValue(int16_t targetPage, int16_t index) {
+  if (randomWalkInitialized[targetPage][index]) {
+    return randomWalkValue[targetPage][index];
+  }
+  const controllerencoder &encoder = controls[targetPage].encoder[index];
+  if (encoder.output == OSC_OUTPUT && encoder.oscRange == OSC_RANGE_DELTA) {
+    return 0.0f;
+  }
+  return encoderCenter(targetPage, index);
+}
+
+void notifyWebControlUpdated(int16_t targetPage, int16_t index, bool encoder,
+                             bool sendOutput) {
+  if (encoder) {
+    randomWalkInitialized[targetPage][index] = false;
+    if (sendOutput) {
+      sendEncoderOutput(targetPage, index, encoderCenter(targetPage, index));
+    }
+  } else if (sendOutput) {
+    controllerswitch &controlSwitch = controls[targetPage].encswitch[index];
+    sendSwitchOutput(targetPage, index,
+                     controlSwitch.value == controlSwitch.maxvalue);
+  }
+  if (targetPage != page || UI_state != UI_SEND_MIDI) {
+    return;
+  }
+  if (encoder) {
+    showencoderLED(targetPage, index);
+    if (!displaySwitchLEDs && lastcontrol == index) {
+      showencoder(targetPage, index);
+    }
+  } else {
+    showswitchLED(targetPage, index);
+    if (displaySwitchLEDs && lastcontrol == index) {
+      showswitch(targetPage, index);
+    }
+  }
+  LEDS.show();
+}
+
+void prepareWebConfigurationLoad(void) {
+  for (int16_t i = 0; i < NUMENCODERS; ++i) {
+    if (momentarySwitchActive[i]) {
+      endMomentarySwitch(page, i);
+    }
+    pendingSwitchClick[i] = false;
+    randomWidthEditActive[i] = false;
+    momentarySwitchActive[i] = false;
+  }
+}
+
+void notifyWebConfigurationLoaded(void) {
+  synchronizeSwitchActions();
+  for (int16_t p = 0; p < CONTROLLER_PAGES; ++p) {
+    for (int16_t i = 0; i < NUMENCODERS; ++i) {
+      randomWalkInitialized[p][i] = false;
+      randomWalkValue[p][i] = encoderCenter(p, i);
+    }
+  }
+  if (UI_state == UI_SEND_MIDI) {
+    showencoderLEDs(page);
+    if (displaySwitchLEDs) {
+      showswitch(page, lastcontrol);
+    } else {
+      showencoder(page, lastcontrol);
+    }
+    LEDS.show();
+    updatedisplay();
+  }
 }
 
 // flush all encoder messages 
@@ -580,8 +787,10 @@ void save_restore(void) {
     else display.printf("File Write Error");
   } 
   if ((saverestore_action == 0) && (saverestore_confirm ==1)) {
-    if (loadconfig(saverestore_slot)) display.printf("Restored from Slot %d", saverestore_slot);
-    else display.printf("File Read Error");     
+    if (loadconfig(saverestore_slot)) {
+      synchronizeSwitchActions();
+      display.printf("Restored from Slot %d", saverestore_slot);
+    } else display.printf("File Read Error");
   }
   if ((saverestore_action == 2) && (saverestore_confirm ==1)) {
     LittleFS.format();
@@ -590,7 +799,6 @@ void save_restore(void) {
   if (saverestore_confirm == 0) display.printf("Aborted Save/Restore"); 
   display.display();
   saverestore_action=saverestore_confirm=0; // reset the menu
-  UI_state=UI_SEND_MIDI;  // put the UI back to default state
   page=lastcontrol=0;
   showencoderLEDs(page); // update the LEDs
   LEDS.show();
@@ -599,6 +807,7 @@ void save_restore(void) {
   showencoder(page,lastcontrol);   // restore the display
   updatedisplay();
   flush_encoders();   // toss any encoder messages
+  UI_state=UI_SEND_MIDI;
 }
 
 // Custom MIDI callback that prints incoming messages.
@@ -636,7 +845,7 @@ void setup() {
   Wire1.begin();
 
 // set up timer interrupt 
-  alarm_in_us(TIMER_MICROS);
+  start_encoder_timer();
  
   // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
   if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
@@ -678,9 +887,11 @@ void setup() {
 
   displaytimer=millis(); // reset display blanking timer
 
-  // WIFI setup
-  startWifiFileManager();
-  setupOSC();  // set up OSC server
+  loadWifiSettings();
+  if (connectSavedWifi()) {
+    startWifiFileManager();
+    setupOSC();
+  }
 }
 
 void loop() {
@@ -693,11 +904,54 @@ void loop() {
   if ((millis()-displaytimer) > DISPLAY_BLANK_MS) blankdisplay(); // protect the OLED from burnin
 
   switch (UI_state) {
-    case UI_SEND_MIDI:  // process encoders
+    case UI_SEND_MIDI: {  // process encoders
+      ClickEncoder::Button controlButtons[NUMENCODERS];
+      ClickEncoder::ButtonEvent controlButtonEvents[NUMENCODERS];
+      for (int i = 0; i < NUMENCODERS; ++i) {
+        controlButtonEvents[i] = enc[i].getButtonEvent();
+        controlButtons[i] = enc[i].getButton();
+        if (controlButtonEvents[i] == ClickEncoder::ActiveEdge) {
+          pendingSwitchClick[i] = true;
+        }
+      }
+
       for (int i=0;i<NUMENCODERS;++i) {
         if ((t=enc[i].getValue()) !=0) { // if encoder has moved process
-          // TEMP
-          sendOSCFloat("/twisty/test/from_pico", 0.456f);
+          controllerencoder &encoder = controls[page].encoder[i];
+          if (controlButtons[i] == ClickEncoder::Held) {
+            float widthStep = encoder.output == OSC_OUTPUT ? 0.01f : 1.0f;
+            float maximumWidth = encoder.output == OSC_OUTPUT
+                                     ? (encoder.oscRange == OSC_RANGE_0_TO_1 ? 1.0f : 2.0f)
+                                     : 127.0f;
+            encoder.randomWalkWidth =
+                constrain(encoder.randomWalkWidth + t * widthStep, 0.0f, maximumWidth);
+            randomWidthEditActive[i] = true;
+            randomWalkInitialized[page][i] = false;
+            if (momentarySwitchActive[i]) {
+              endMomentarySwitch(page, i);
+            }
+            showEncoderWidth(page, i, true);
+            continue;
+          }
+          if (encoder.output == OSC_OUTPUT) {
+            if (encoder.oscRange == OSC_RANGE_DELTA) {
+              sendOSCControlValue(encoder.oscAddress, static_cast<float>(t),
+                                  static_cast<oscvaluetype>(encoder.oscValueType));
+            } else {
+              int stepMilli = encoder.oscRange == OSC_RANGE_0_TO_1 ? 8 : 16;
+              int value = encoder.oscValueMilli + t * stepMilli;
+              encoder.oscValueMilli = encoder.oscRange == OSC_RANGE_0_TO_1
+                                          ? constrain(value, 0, 1000)
+                                          : constrain(value, -1000, 1000);
+              sendEncoderOutput(page, i, encoder.oscValueMilli / 1000.0f);
+            }
+            randomWalkInitialized[page][i] = false;
+            lastcontrol=i;
+            showencoderLED(page,lastcontrol);
+            showencoder(page,lastcontrol);
+            showEncoderWidth(page, i, false);
+            continue;
+          }
           // t is a signed integer, positive for clockwise, negative for counterclockwise
           if(controls[page].encoder[i].type == CCTYPE) {  // only process CC messages for now
             if (controls[page].encoder[i].minvalue < controls[page].encoder[i].maxvalue ) { // normal direction
@@ -734,89 +988,44 @@ void loop() {
             // delta messages are updated via the MIDI callback function
             showencoderLED(page,lastcontrol);
             showencoder(page,lastcontrol);
+            showEncoderWidth(page, i, false);
             updatedisplay();
           }
+          randomWalkInitialized[page][i] = false;
         }
       }
         // process switches
       for (int i=0;i<NUMENCODERS;++i) {
-        event=enc[i].getButtonEvent();
-        if (event == ClickEncoder::ActiveEdge) { // switch just pressed, send MIDI message and update LEDs        
-          switch (controls[page].encswitch[i].mode) {
-            case MOMENTARY:
-              controls[page].encswitch[i].value=controls[page].encswitch[i].maxvalue; 
-              switch (controls[page].encswitch[i].type) {
-                case CCMESSAGE:
-                  sendcontrolChange(controls[page].encswitch[i].channel, controls[page].encswitch[i].ccnumber,controls[page].encswitch[i].value); 
-                  break;
-                case PCMESSAGE:
-                  sendprogramChange(controls[page].encswitch[i].channel, controls[page].encswitch[i].value); 
-                  break;
-                case NOTEMESSAGE:
-                  sendnoteOn(controls[page].encswitch[i].channel, controls[page].encswitch[i].value, DEFAULT_VELOCITY);
-                  lastnotesent=controls[page].encswitch[i].value;
-                  break;
-                case SETENC:
-                 // controls[page].encoder[i].value=controls[page].encswitch[i].maxvalue;  // do this on button release
-                  break;
-                default:
-                  break;
-              }
-              break;
-            case TOGGLE:
-              if (controls[page].encswitch[i].value == controls[page].encswitch[i].minvalue) controls[page].encswitch[i].value=controls[page].encswitch[i].maxvalue; 
-              else controls[page].encswitch[i].value = controls[page].encswitch[i].minvalue;
-              switch (controls[page].encswitch[i].type) {
-                case CCMESSAGE:
-                  sendcontrolChange(controls[page].encswitch[i].channel, controls[page].encswitch[i].ccnumber,controls[page].encswitch[i].value); 
-                  break;
-                case PCMESSAGE:
-                  sendprogramChange(controls[page].encswitch[i].channel, controls[page].encswitch[i].value); 
-                  break;
-                case NOTEMESSAGE:
-                  sendnoteOff(controls[page].encswitch[i].channel, lastnotesent,0); // turn off the last note that was sent
-                  sendnoteOn(controls[page].encswitch[i].channel, controls[page].encswitch[i].value, DEFAULT_VELOCITY);
-                  lastnotesent=controls[page].encswitch[i].value; 
-                  break;
-                case SETENC:
-                  controls[page].encoder[i].value=controls[page].encswitch[i].maxvalue; 
-                  break;
-                default:
-                  break;
-              }
-              break;
-            default:
-              break;
-          }  // end switch
-          lastcontrol=i;  // save index of the last used encoder or switch
-          showswitchLED(page,lastcontrol);
-          showswitch(page,lastcontrol);
-          updatedisplay();       
+        event=controlButtonEvents[i];
+        button=controlButtons[i];
+
+        controllerswitch &controlSwitch = controls[page].encswitch[i];
+        if (button == ClickEncoder::Held && controlSwitch.mode == MOMENTARY &&
+            pendingSwitchClick[i] && !randomWidthEditActive[i] &&
+            !momentarySwitchActive[i]) {
+          beginMomentarySwitch(page, i);
         }
-        if ((event == ClickEncoder::InActiveEdge) && (controls[page].encswitch[i].mode==MOMENTARY)) { // button just released, send MIDI message and update LEDs 
-          controls[page].encswitch[i].value=controls[page].encswitch[i].minvalue;
-          switch (controls[page].encswitch[i].type) {
-            case CCMESSAGE:
-              sendcontrolChange(controls[page].encswitch[i].channel, controls[page].encswitch[i].ccnumber,controls[page].encswitch[i].value); 
-              break;
-            case PCMESSAGE:
-              sendprogramChange(controls[page].encswitch[i].channel, controls[page].encswitch[i].value); 
-              break;
-            case NOTEMESSAGE:
-              sendnoteOff(controls[page].encswitch[i].channel, lastnotesent,0); // turn off the last note that was sent
-              break;
-            case SETENC:
-              controls[page].encoder[i].value=controls[page].encswitch[i].maxvalue; 
-              break;
-            default:
-              break;
+
+        if (event == ClickEncoder::InActiveEdge) {
+          if (randomWidthEditActive[i]) {
+            randomWidthEditActive[i] = false;
+            pendingSwitchClick[i] = false;
+            if (momentarySwitchActive[i]) {
+              endMomentarySwitch(page, i);
+            }
+            showEncoderWidth(page, i, false);
+          } else if (momentarySwitchActive[i]) {
+            endMomentarySwitch(page, i);
+            pendingSwitchClick[i] = false;
+          } else if (pendingSwitchClick[i]) {
+            clickSwitch(page, i);
+            pendingSwitchClick[i] = false;
           }
-          lastcontrol=i;  // save index of the last used encoder or switch
-          showswitchLED(page,lastcontrol);
-          showswitch(page,lastcontrol);
-          updatedisplay();    
         }
       }
+
+      processRandomWalk();
+      processSwitchRamps();
 
       if ((t=lmenuenc.getValue()) !=0) { // left encoder changes controls page
         page=constrain(page+t,0,CONTROLLER_PAGES-1);
@@ -837,38 +1046,107 @@ void loop() {
       }
 
       if (button == ClickEncoder::Clicked) { // click to enter edit menu
-        display.clearDisplay();
-        topmenuindex=0;  // not using top menu, just submenus
-        menustate=SUBSELECT; // do submenu when button is released
-        copy_to_editbuffer(page,lastcontrol); //copy encoder parameters for editing
-        topmenu[topmenuindex].submenuindex=0;  // start from the first item
-        drawsubmenus();
-        drawselector(topmenu[topmenuindex].submenuindex);
-        updatedisplay();
-        flush_encoders();   // toss any encoder messages
-        UI_state=UI_EDIT;
+        beginEncoderMenu(controls[page].encoder[lastcontrol].output);
+        flush_encoders();
+        UI_state=UI_ENCODER_MENU;
       }
 
-      if (rmenuenc.getButton() == ClickEncoder::Clicked) { // click to enter save and restore menu
-        display.clearDisplay();
-        topmenuindex=1;  // not using top menu, just submenus
-        menustate=SUBSELECT; // do submenu when button is released
-        copy_to_editbuffer(page,lastcontrol); //copy encoder parameters for editing
-        topmenu[topmenuindex].submenuindex=0;  // start from the first item
-        drawsubmenus();
-        drawselector(topmenu[topmenuindex].submenuindex);
-        updatedisplay();
-        flush_encoders();   // toss any encoder messages
-        UI_state=UI_LOADSAVE;
+      if (rmenuenc.getButton() == ClickEncoder::Clicked) {
+        beginGlobalSettings();
+        flush_encoders();
+        UI_state=UI_PREMENU;
       }
       break;
+    }
+
+    case UI_ENCODER_MENU: {
+      EncoderMenuAction action = handleEncoderMenu();
+      if (action == ENCODER_MENU_RETURN_TO_CONTROLLER) {
+        display.clearDisplay();
+        showencoder(page,lastcontrol);
+        showencoderLED(page,lastcontrol);
+        updatedisplay();
+        flush_encoders();
+        UI_state=UI_SEND_MIDI;
+      } else if (action != ENCODER_MENU_NONE) {
+        copy_to_editbuffer(page,lastcontrol);
+        topmenu = controllerEditMenu;
+        topmenuindex = 0;
+        controllerEditMenu[0].submenuindex = 0;
+
+        if (action == ENCODER_MENU_EDIT_SETTINGS) {
+          controllerEditMenu[0].submenus = encodersettings;
+          controllerEditMenu[0].numsubmenus = 3;
+        } else if (action == ENCODER_MENU_EDIT_MIDI_ENCODER ||
+            action == ENCODER_MENU_EDIT_OSC_ENCODER) {
+          controllerEditMenu[0].submenus =
+              action == ENCODER_MENU_EDIT_MIDI_ENCODER ? controlparams : oscencoderparams;
+          controllerEditMenu[0].numsubmenus =
+              action == ENCODER_MENU_EDIT_MIDI_ENCODER ? 8 : 5;
+          editbuffer.encoder.output =
+              action == ENCODER_MENU_EDIT_MIDI_ENCODER ? MIDI_OUTPUT : OSC_OUTPUT;
+          editbuffer.encswitch.output = editbuffer.encoder.output;
+        } else {
+          controllerEditMenu[0].submenus =
+              action == ENCODER_MENU_EDIT_MIDI_SWITCH ? &controlparams[8] : oscswitchparams;
+          controllerEditMenu[0].numsubmenus =
+              action == ENCODER_MENU_EDIT_MIDI_SWITCH ? 7 : 4;
+          editbuffer.encswitch.output =
+              action == ENCODER_MENU_EDIT_MIDI_SWITCH ? MIDI_OUTPUT : OSC_OUTPUT;
+          editbuffer.encoder.output = editbuffer.encswitch.output;
+        }
+
+        menustate = SUBSELECT;
+        drawsubmenus();
+        drawselector(controllerEditMenu[0].submenuindex);
+        updatedisplay();
+        flush_encoders();
+        returnToEncoderMenu=true;
+        UI_state=UI_EDIT;
+      }
+      break;
+    }
+
+    case UI_PREMENU: {
+      GlobalSettingsAction action = handleGlobalSettings();
+      if (action == GLOBAL_SETTINGS_OPEN_SAVELOAD) {
+        topmenu=mainmenu;
+        topmenuindex=1;
+        menustate=SUBSELECT;
+        copy_to_editbuffer(page,lastcontrol);
+        topmenu[topmenuindex].submenuindex=0;
+        drawsubmenus();
+        drawselector(topmenu[topmenuindex].submenuindex);
+        updatedisplay();
+        flush_encoders();
+        returnToPremenu=true;
+        UI_state=UI_LOADSAVE;
+      } else if (action == GLOBAL_SETTINGS_WIFI_CONNECTED) {
+        startWifiFileManager();
+        setupOSC();
+      } else if (action == GLOBAL_SETTINGS_OSC_SETTINGS_UPDATED) {
+        setupOSC();
+      } else if (action == GLOBAL_SETTINGS_RETURN_TO_CONTROLLER) {
+        display.clearDisplay();
+        showencoder(page,lastcontrol);
+        showencoderLED(page,lastcontrol);
+        updatedisplay();
+        flush_encoders();
+        UI_state=UI_SEND_MIDI;
+      }
+      break;
+    }
 
     case UI_EDIT:  // do edit menu 
+      if (menustate == TEXT_INPUT) {
+        domenus();
+        break;
+      }
       for (n=0; n< NUMENCODERS;++n) {   // see if a button is pressed
         if ((button=enc[n].getButton()) == ClickEncoder::Clicked) break;
       }
       if ((n< NUMENCODERS) || ((t=lmenuenc.getValue()) !=0)) { // button press or scroll thru controls with left encoder
-        restore_from_editbuffer(page,lastcontrol); // copy edited values back to the encoder parameters
+        restoreCurrentEditBuffer();
         showencoderLED(page,lastcontrol); // restore control color  
         if (n<NUMENCODERS) lastcontrol=n;    
         else lastcontrol=constrain(lastcontrol+t,0,NUMENCODERS-1);
@@ -879,11 +1157,21 @@ void loop() {
       }
       if (lmenuenc.getButton() == ClickEncoder::Clicked) { // click to exit menu
         display.clearDisplay();
-        restore_from_editbuffer(page,lastcontrol); // copy edited values back to the encoder parameters
+        restoreCurrentEditBuffer();
         showencoder(page,lastcontrol); // redraw the encoder display
         showencoderLED(page,lastcontrol); // update the LED too
         updatedisplay();
-        UI_state=UI_SEND_MIDI;
+        if (returnToPremenu) {
+          returnToPremenu=false;
+          UI_state=UI_PREMENU;
+          beginGlobalSettings();
+        } else if (returnToEncoderMenu) {
+          returnToEncoderMenu=false;
+          UI_state=UI_ENCODER_MENU;
+          beginEncoderMenu(controls[page].encoder[lastcontrol].output);
+        } else {
+          UI_state=UI_SEND_MIDI;
+        }
         while(!digitalRead(LMENU_ENCSW_IN)) delay(10); // loop here till button released 
         flush_encoders();   // toss any encoder messages
       }
@@ -908,7 +1196,13 @@ void loop() {
         showencoder(page,lastcontrol); // redraw the encoder display
         showencoderLED(page,lastcontrol); // update the LED too
         updatedisplay();
-        UI_state=UI_SEND_MIDI;
+        if (returnToPremenu) {
+          returnToPremenu=false;
+          UI_state=UI_PREMENU;
+          beginGlobalSettings();
+        } else {
+          UI_state=UI_SEND_MIDI;
+        }
         while(!digitalRead(LMENU_ENCSW_IN)) delay(10); // loop here till button released 
         flush_encoders();   // toss any encoder messages
       }

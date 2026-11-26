@@ -1,0 +1,14 @@
+#pragma once
+
+enum EncoderMenuAction {
+  ENCODER_MENU_NONE,
+  ENCODER_MENU_RETURN_TO_CONTROLLER,
+  ENCODER_MENU_EDIT_SETTINGS,
+  ENCODER_MENU_EDIT_MIDI_ENCODER,
+  ENCODER_MENU_EDIT_MIDI_SWITCH,
+  ENCODER_MENU_EDIT_OSC_ENCODER,
+  ENCODER_MENU_EDIT_OSC_SWITCH
+};
+
+void beginEncoderMenu(int output);
+EncoderMenuAction handleEncoderMenu(void);

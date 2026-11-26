@@ -2,6 +2,9 @@
 #include "osc.h"
 #include <WiFi.h>
 #include <ArduinoOSCWiFi.h>
+#include <math.h>
+
+#include "wifisettings.h"
 
 // ========================================
 // OSC CONFIGURATION
@@ -9,9 +12,6 @@
 
 // Change this to your norns IP address
 const char* NORNS_IP = "192.168.18.84";
-
-const uint16_t NORNS_PORT = 10111;
-const uint16_t TWISTY_OSC_PORT = 8000;
 
 // ========================================
 // RECEIVED VALUES
@@ -27,16 +27,24 @@ String oscReceivedString = "";
 
 void setupOSC() {
 
+    static uint16_t subscribedPort = 0;
+    if (subscribedPort == wifiSettings.oscListenPort) {
+        return;
+    }
+
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("OSC: WiFi not connected");
         return;
     }
 
     Serial.println("Starting OSC...");
+    if (subscribedPort != 0) {
+        OscWiFi.unsubscribe(subscribedPort);
+    }
 
     // Receive float
     OscWiFi.subscribe(
-        TWISTY_OSC_PORT,
+        wifiSettings.oscListenPort,
         "/twisty/test/float",
         [](float value) {
 
@@ -49,7 +57,7 @@ void setupOSC() {
 
     // Receive integer
     OscWiFi.subscribe(
-        TWISTY_OSC_PORT,
+        wifiSettings.oscListenPort,
         "/twisty/test/int",
         [](int32_t value) {
 
@@ -62,7 +70,7 @@ void setupOSC() {
 
     // Receive string
     OscWiFi.subscribe(
-        TWISTY_OSC_PORT,
+        wifiSettings.oscListenPort,
         "/twisty/test/string",
         [](String value) {
 
@@ -74,7 +82,8 @@ void setupOSC() {
     );
 
     Serial.print("OSC listening on port ");
-    Serial.println(TWISTY_OSC_PORT);
+    Serial.println(wifiSettings.oscListenPort);
+    subscribedPort = wifiSettings.oscListenPort;
 }
 
 // ========================================
@@ -93,12 +102,11 @@ void loopOSC() {
 // ========================================
 
 void sendOSCFloat(const char* address, float value) {
-    Serial.println("sending a float");
     if (WiFi.status() != WL_CONNECTED) return;
 
     OscWiFi.send(
         String(NORNS_IP),
-        NORNS_PORT,
+        wifiSettings.oscSendPort,
         String(address),
         value
     );
@@ -110,7 +118,7 @@ void sendOSCInt(const char* address, int32_t value) {
 
     OscWiFi.send(
         String(NORNS_IP),
-        NORNS_PORT,
+        wifiSettings.oscSendPort,
         String(address),
         value
     );
@@ -122,8 +130,27 @@ void sendOSCString(const char* address, const char* value) {
 
     OscWiFi.send(
         String(NORNS_IP),
-        NORNS_PORT,
+        wifiSettings.oscSendPort,
         String(address),
         String(value)
     );
+}
+
+void sendOSCControlValue(const char* address, float value, oscvaluetype valueType) {
+    switch (valueType) {
+        case OSC_INTEGER: {
+            int32_t integerValue = static_cast<int32_t>(value >= 0.0f ? value + 0.5f : value - 0.5f);
+            sendOSCInt(address, integerValue);
+            break;
+        }
+        case OSC_STRING: {
+            String stringValue(value, 3);
+            sendOSCString(address, stringValue.c_str());
+            break;
+        }
+        case OSC_FLOAT:
+        default:
+            sendOSCFloat(address, value);
+            break;
+    }
 }
